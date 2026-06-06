@@ -33,7 +33,6 @@ st.markdown('<div class="main-title">Prediction of Compressive Strength in Cemen
 # ==========================================
 # 2. LOAD BRAIN ENGINE (Bypass Scikit-Learn)
 # ==========================================
-@st.cache_resource
 def load_prediction_engine():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
