@@ -1,10 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from xgboost import XGBRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.model_selection import train_test_split
+import joblib
 
 # ==========================================
 # 1. KONFIGURASI HALAMAN & STYLE GUI (STREAMLIT)
@@ -34,79 +31,38 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. PIPELINE KODE PERSIS JUPYTER NOTEBOOK (BACKEND)
+# 2. LOAD BRAIN ENGINE (Membaca File Biner Mandiri)
 # ==========================================
 @st.cache_resource
-def train_exact_notebook_engine():
+def load_prediction_engine():
     try:
-        # 1. Membaca Data.csv (868 baris)
-        df = pd.read_csv('xgb_mortar_model.pkl')
-        if 'Strength (MPa)' in df.columns:
-            df = df.rename(columns={'Strength (MPa)': 'Strength'})
+        # Membaca paket model biner secara langsung (Bukan dengan pd.read_csv)
+        artifacts = joblib.load('xgb_mortar_model.pkl')
+        return artifacts['model'], artifacts['scaler'], artifacts['columns']
     except FileNotFoundError:
-        st.error("Error: File 'Data.csv' tidak ditemukan. Pastikan file Data.csv berada dalam satu folder dengan app.py.")
-        return None, None, None, None
+        st.error("Error: File 'xgb_mortar_model.pkl' tidak ditemukan di repositori GitHub Anda.")
+        return None, None, None
 
-    # --- TAHAP 1: Advanced Feature Engineering (Sesuai Notebook) ---
-    def prepare_features(data_df):
-        df_res = data_df.copy()
-        binder_cols = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA']
-        df_res['Total_Binder'] = df_res[binder_cols].sum(axis=1)
-        safe_binder = df_res['Total_Binder'].replace(0, 1e-6)
-        
-        df_res['WBR'] = df_res['Water'] / safe_binder
-        df_res['ABR'] = df_res['Aggregate'] / safe_binder
-        df_res['Log_Age'] = np.log1p(df_res['Age'])
-        df_res['Sqrt_Age'] = np.sqrt(df_res['Age'])
-        df_res['SP_x_WBR'] = df_res['SP'] * df_res['WBR']
-        df_res['SP_div_WBR'] = df_res.apply(lambda r: r['SP'] / r['WBR'] if r['WBR'] > 0 else 0, axis=1)
-        df_res['GGBS_x_WBR'] = df_res['GGBS'] * df_res['WBR']
-        df_res['FA_x_WBR'] = df_res['FA'] * df_res['WBR']
-        df_res['WBR_sq'] = df_res['WBR']**2
-        df_res['SP_sq'] = df_res['SP']**2
+xgb_engine, main_scaler, feature_columns = load_prediction_engine()
 
-        # Drop kolom penunjang persis di cell kodingan notebook Anda
-        cols_to_drop = ['Water', 'FM', 'Strength', 'Total_Binder']
-        return df_res.drop(columns=[c for c in cols_to_drop if c in df_res.columns])
-
-    # Ekstraksi Fitur
-    df_fe = prepare_features(df).dropna()
+# Fungsi pembentuk fitur modular untuk input user
+def feature_extractor(data_df):
+    df_res = data_df.copy()
+    binder_cols = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA']
+    df_res['Total_Binder'] = df_res[binder_cols].sum(axis=1)
+    safe_binder = df_res['Total_Binder'].replace(0, 1e-6)
     
-    # --- TAHAP 2: Pembersihan Outlier dengan Local Outlier Factor (LOF) ---
-    lof = LocalOutlierFactor(n_neighbors=20, contamination=0.05)
-    outlier_preds = lof.fit_predict(df_fe)
-    
-    # Saring data bersih (Mengurangi 44 data pencilan, sisa 824 baris)
-    clean_indices = (outlier_preds == 1)
-    X_clean = df_fe[clean_indices]
-    y_clean = df[df.index.isin(X_clean.index)]['Strength']
-
-    # --- TAHAP 3: Standarisasi dengan StandardScaler ---
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_clean)
-
-    # --- TAHAP 4: Sinkronisasi Train/Test Split ---
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y_clean, test_size=0.2, random_state=42
-    )
-
-    # Melatih XGBoost Teroptimasi HANYA pada X_train dan y_train
-    xgb_model = XGBRegressor(
-        n_estimators=1000, 
-        max_depth=7, 
-        learning_rate=0.1, 
-        subsample=0.8, 
-        colsample_bytree=1.0, 
-        min_child_weight=2,
-        random_state=42, 
-        n_jobs=-1
-    )
-    xgb_model.fit(X_train, y_train)
-
-    return xgb_model, scaler, X_clean.columns, prepare_features
-
-# Jalankan pipeline inisialisasi model
-xgb_engine, main_scaler, feature_columns, feature_extractor = train_exact_notebook_engine()
+    df_res['WBR'] = df_res['Water'] / safe_binder
+    df_res['ABR'] = df_res['Aggregate'] / safe_binder
+    df_res['Log_Age'] = np.log1p(df_res['Age'])
+    df_res['Sqrt_Age'] = np.sqrt(df_res['Age'])
+    df_res['SP_x_WBR'] = df_res['SP'] * df_res['WBR']
+    df_res['SP_div_WBR'] = df_res.apply(lambda r: r['SP'] / r['WBR'] if r['WBR'] > 0 else 0, axis=1)
+    df_res['GGBS_x_WBR'] = df_res['GGBS'] * df_res['WBR']
+    df_res['FA_x_WBR'] = df_res['FA'] * df_res['WBR']
+    df_res['WBR_sq'] = df_res['WBR']**2
+    df_res['SP_sq'] = df_res['SP']**2
+    return df_res
 
 # ==========================================
 # 3. INTERFACE PENGGUNA INTERAKTIF (FRONTEND)
@@ -133,15 +89,17 @@ if xgb_engine is not None:
         water = st.number_input("Water (ratio by total binders)", min_value=0.0, max_value=1.0, value=0.35, step=0.01)
 
     st.write("---")
-    age = st.number_input("Curing Age (days)", min_value=1.0, max_value=365.0, value=28.0, step=1.0)
+    
+    # Mengunci variasi umur pada rentang data laboratorium aktual untuk menjaga logika kestabilan fisik pohon keputusan
+    age = st.selectbox("Curing Age (days)", options=[3.0, 7.0, 28.0, 56.0, 91.0], index=2)
 
     # Logika Tombol Eksekusi Prediksi
     if st.button("Predict Compressive Strength", type="primary", use_container_width=True):
         total_binder = ggbs + cfa + rufa + sf + fa
         
         # Sensor Keamanan Fisika Mortar
-        if water <= 0.0001 or total_binder <= 0.0001 or age <= 0.0001:
-            st.error("🚨 INVALID MIX DESIGN! Kuantitas Air, komponen Binder, atau Umur Beton tidak boleh nol.")
+        if water <= 0.0001 or total_binder <= 0.0001:
+            st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
             # Mengubah data input user menjadi kerangka DataFrame
             input_df = pd.DataFrame([{
