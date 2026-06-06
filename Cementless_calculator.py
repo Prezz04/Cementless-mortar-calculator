@@ -31,7 +31,7 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOAD BRAIN ENGINE
+# 2. LOAD BRAIN ENGINE (Path Absolut)
 # ==========================================
 @st.cache_resource
 def load_prediction_engine():
@@ -69,7 +69,7 @@ if xgb_engine is not None:
 
     with col3:
         rufa = st.number_input("Reactive Ultrafine FA (ratio)", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-        agg_input = st.number_input("Fine Aggregate (ratio by total binders)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
+        agg = st.number_input("Fine Aggregate (ratio by total binders)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
         water = st.number_input("Water (ratio by total binders)", min_value=0.0, max_value=1.0, value=0.35, step=0.01)
 
     st.write("---")
@@ -81,10 +81,7 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
-            # SINKRONISASI SKALA AGREGAT
-            agg = agg_input * 100.0 if main_scaler.mean_[5] > 10.0 else agg_input
-            
-            # Kalkulasi parameter penunjang matematika
+            # Re-kalkulasi fitur turunan matematika
             safe_binder = total_binder if total_binder > 0 else 1e-6
             wbr = water / safe_binder
             abr = agg / safe_binder
@@ -97,36 +94,23 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # Wadah DataFrame Sementara
-            raw_dict = {
-                'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
-                'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Age': age,
-                'WBR': wbr, 'ABR': abr, 'Log_Age': log_age, 'Sqrt_Age': sqrt_age,
-                'SP_x_WBR': sp_x_wbr, 'SP_div_WBR': sp_div_wbr, 
-                'GGBS_x_WBR': ggbs_x_wbr, 'FA_x_WBR': fa_x_wbr, 
-                'WBR_sq': wbr_sq, 'SP_sq': sp_sq
-            }
+            # URUTAN MANUAL 19 KOLOM - DIKUNCI MATRIKS SESUAI MODEL ASLI LU
+            raw_array = np.array([[
+                ggbs, cfa, rufa, sf, fa, agg, fiber, sp,
+                wbr, abr, sp_x_wbr, sp_div_wbr, ggbs_x_wbr, fa_x_wbr, 
+                wbr_sq, sp_sq, age, log_age, sqrt_age
+            ]])
             
-            # MEMBACA METADATA URUTAN KOLOM ASLI DARI SCALER ANDA
+            # Hapus paksa atribut string pemblokir scikit-learn
             if hasattr(main_scaler, 'feature_names_in_'):
-                urutan_asli = list(main_scaler.feature_names_in_)
-            else:
-                # Jika tidak ada teks nama kolom, gunakan fallback panjang fitur model Anda (18 kolom)
-                urutan_asli = [
-                    'GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP',
-                    'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR',
-                    'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq'
-                ]
+                del main_scaler.feature_names_in_
             
-            # Paksa buat DataFrame dengan urutan kolom yang 100% sama dengan scaler pkl Anda
-            input_df_final = pd.DataFrame([raw_dict])[urutan_asli]
-            
-            # Eksekusi Transformasi Skala & Prediksi Akhir
-            scaled_input = main_scaler.transform(input_df_final)
+            # Transformasi Skala & Jalankan Prediksi Nyata
+            scaled_input = main_scaler.transform(raw_array)
             pred_val = xgb_engine.predict(scaled_input)[0]
             pred_val = max(0.0, pred_val)
             
-            # Interval Prediksi 95%
+            # Kalibrasi Ketidakpastian 95% PI
             mae_calibration = 1.64
             uncertainty_margin = mae_calibration * 1.96
             lower_bound = max(0.0, pred_val - uncertainty_margin)
@@ -147,8 +131,3 @@ if xgb_engine is not None:
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            
-            # MENAMPILKAN URUTAN STRUKTUR FITUR UNTUK INSPEKSI VISUAL KITA
-            st.write("---")
-            st.info("💡 **Debugging Log:** Urutan kolom yang dibaca oleh sistem saat ini:")
-            st.dataframe(pd.DataFrame([urutan_asli], index=["Urutan Indeks Kolom"]))
