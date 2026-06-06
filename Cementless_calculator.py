@@ -94,20 +94,46 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # URUTAN MANUAL 19 KOLOM - DIKUNCI MATRIKS SESUAI MODEL ASLI LU
-            raw_array = np.array([[
+            # 1. SUSUN ARRAY 18 KOLOM UNTUK SCALER (Tanpa variabel 'age' mentah)
+            features_for_scaler = np.array([[
                 ggbs, cfa, rufa, sf, fa, agg, fiber, sp,
                 wbr, abr, sp_x_wbr, sp_div_wbr, ggbs_x_wbr, fa_x_wbr, 
-                wbr_sq, sp_sq, age, log_age, sqrt_age
+                wbr_sq, sp_sq, log_age, sqrt_age
             ]])
             
             # Hapus paksa atribut string pemblokir scikit-learn
             if hasattr(main_scaler, 'feature_names_in_'):
                 del main_scaler.feature_names_in_
             
-            # Transformasi Skala & Jalankan Prediksi Nyata
-            scaled_input = main_scaler.transform(raw_array)
-            pred_val = xgb_engine.predict(scaled_input)[0]
+            # 2. JALANKAN TRANSFORMASI SKALA (Dipercaya aman karena panjang data pas 18)
+            scaled_features = main_scaler.transform(features_for_scaler)[0]
+            
+            # 3. SUSUN ULANG MENJADI MATRIKS 19 KOLOM UNTUK XGBOOST
+            # Kita sisipkan kembali nilai 'age' mentah ke posisi indeks ke-16 (Sesuai struktur pohon keputusan .json lu)
+            scaled_input_final = np.array([[
+                scaled_features[0],  # GGBS
+                scaled_features[1],  # CFA
+                scaled_features[2],  # RUFA
+                scaled_features[3],  # SF
+                scaled_features[4],  # FA
+                scaled_features[5],  # Aggregate
+                scaled_features[6],  # Fiber
+                scaled_features[7],  # SP
+                scaled_features[8],  # WBR
+                scaled_features[9],  # ABR
+                scaled_features[10], # SP_x_WBR
+                scaled_features[11], # SP_div_WBR
+                scaled_features[12], # GGBS_x_WBR
+                scaled_features[13], # FA_x_WBR
+                scaled_features[14], # WBR_sq
+                scaled_features[15], # SP_sq
+                age,                 # Age Mentah (Tidak diskala pas training)
+                scaled_features[16], # Log_Age
+                scaled_features[17]  # Sqrt_Age
+            ]])
+            
+            # 4. EKSEKUSI PREDIKSI FINAL MODEL
+            pred_val = xgb_engine.predict(scaled_input_final)[0]
             pred_val = max(0.0, pred_val)
             
             # Kalibrasi Ketidakpastian 95% PI
