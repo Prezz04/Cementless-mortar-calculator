@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import os
 from xgboost import XGBRegressor
 
 # ==========================================
@@ -29,32 +30,7 @@ st.markdown("""
 
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
-# ==========================================
-# 2. LOAD BRAIN ENGINE (Universal JSON & PKL Loader)
-# ==========================================
-@st.cache_resource
-def load_prediction_engine():
-    try:
-        # Memuat Scaler terpisah
-        scaler = joblib.load('scaler_mortar.pkl')
-        
-        # Memuat Model dari format JSON murni XGBoost
-        model = XGBRegressor()
-        model.load_model('xgb_mortar_model.json')
-        
-        # Hardcode nama kolom fitur sesuai urutan persis untuk alignment aman
-        columns = [
-            'GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP', 
-            'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR', 
-            'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq'
-        ]
-        return model, scaler, columns
-    except Exception as e:
-        st.error(f"Error memuat model biner: {str(e)}")
-        return None, None, None
-
-xgb_engine, main_scaler, feature_columns = load_prediction_engine()
-
+# Fungsi pembentuk fitur modular (Wajib ditaruh di atas sebelum load engine)
 def feature_extractor(data_df):
     df_res = data_df.copy()
     binder_cols = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA']
@@ -71,7 +47,40 @@ def feature_extractor(data_df):
     df_res['FA_x_WBR'] = df_res['FA'] * df_res['WBR']
     df_res['WBR_sq'] = df_res['WBR']**2
     df_res['SP_sq'] = df_res['SP']**2
-    return df_res
+    
+    # Drop kolom penunjang non-fitur persis sesuai skema latih di notebook
+    cols_to_drop = ['Water', 'FM', 'Strength', 'Total_Binder']
+    return df_res.drop(columns=[c for c in cols_to_drop if c in df_res.columns])
+
+# ==========================================
+# 2. LOAD BRAIN ENGINE (Sinkronisasi Fitur Otomatis)
+# ==========================================
+@st.cache_resource
+def load_prediction_engine():
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        scaler_path = os.path.join(current_dir, 'scaler_mortar.pkl')
+        model_path = os.path.join(current_dir, 'xgb_mortar_model.json')
+        
+        scaler = joblib.load(scaler_path)
+        
+        model = XGBRegressor()
+        model.load_model(model_path)
+        
+        # Mengambil urutan nama kolom fitur asli yang tersimpan di dalam objek scaler
+        if hasattr(scaler, 'feature_names_in_'):
+            columns = scaler.feature_names_in_
+        else:
+            # Fallback otomatis jika atribut internal skikit-learn kosong
+            columns = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP', 
+                       'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR', 
+                       'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq']
+        return model, scaler, columns
+    except Exception as e:
+        st.error(f"Error memuat model biner: {str(e)}")
+        return None, None, None
+
+xgb_engine, main_scaler, feature_columns = load_prediction_engine()
 
 # ==========================================
 # 3. INTERFACE PENGGUNA INTERAKTIF (FRONTEND)
@@ -104,16 +113,21 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
+            # Membuat struktur DataFrame awal input user
             input_df = pd.DataFrame([{
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
                 'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Water': water, 'Age': age
             }])
             
+            # Menjalankan pengekstraksi fitur matematika
             processed_input = feature_extractor(input_df)
+            
+            # Memaksa urutan kolom processed_input mengikuti susunan variabel internal scaler bawaan pkl Anda
             processed_input = processed_input[feature_columns]
+            
+            # Eksekusi penskalaan nilai input tanpa error nama kolom
             scaled_input = main_scaler.transform(processed_input)
             
-            # Eksekusi prediksi murni dari file JSON tanpa konflik atribut sklearn
             pred_val = xgb_engine.predict(scaled_input)[0]
             
             mae_calibration = 1.64
