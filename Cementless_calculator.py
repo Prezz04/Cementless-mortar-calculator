@@ -30,30 +30,8 @@ st.markdown("""
 
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
-# Fungsi pembentuk fitur modular (Wajib ditaruh di atas sebelum load engine)
-def feature_extractor(data_df):
-    df_res = data_df.copy()
-    binder_cols = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA']
-    df_res['Total_Binder'] = df_res[binder_cols].sum(axis=1)
-    safe_binder = df_res['Total_Binder'].replace(0, 1e-6)
-    
-    df_res['WBR'] = df_res['Water'] / safe_binder
-    df_res['ABR'] = df_res['Aggregate'] / safe_binder
-    df_res['Log_Age'] = np.log1p(df_res['Age'])
-    df_res['Sqrt_Age'] = np.sqrt(df_res['Age'])
-    df_res['SP_x_WBR'] = df_res['SP'] * df_res['WBR']
-    df_res['SP_div_WBR'] = df_res.apply(lambda r: r['SP'] / r['WBR'] if r['WBR'] > 0 else 0, axis=1)
-    df_res['GGBS_x_WBR'] = df_res['GGBS'] * df_res['WBR']
-    df_res['FA_x_WBR'] = df_res['FA'] * df_res['WBR']
-    df_res['WBR_sq'] = df_res['WBR']**2
-    df_res['SP_sq'] = df_res['SP']**2
-    
-    # Drop kolom penunjang non-fitur persis sesuai skema latih di notebook
-    cols_to_drop = ['Water', 'FM', 'Strength', 'Total_Binder']
-    return df_res.drop(columns=[c for c in cols_to_drop if c in df_res.columns])
-
 # ==========================================
-# 2. LOAD BRAIN ENGINE (Sinkronisasi Fitur Otomatis)
+# 2. LOAD BRAIN ENGINE (Path Absolut)
 # ==========================================
 @st.cache_resource
 def load_prediction_engine():
@@ -67,20 +45,12 @@ def load_prediction_engine():
         model = XGBRegressor()
         model.load_model(model_path)
         
-        # Mengambil urutan nama kolom fitur asli yang tersimpan di dalam objek scaler
-        if hasattr(scaler, 'feature_names_in_'):
-            columns = scaler.feature_names_in_
-        else:
-            # Fallback otomatis jika atribut internal skikit-learn kosong
-            columns = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP', 
-                       'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR', 
-                       'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq']
-        return model, scaler, columns
+        return model, scaler
     except Exception as e:
         st.error(f"Error memuat model biner: {str(e)}")
-        return None, None, None
+        return None, None
 
-xgb_engine, main_scaler, feature_columns = load_prediction_engine()
+xgb_engine, main_scaler = load_prediction_engine()
 
 # ==========================================
 # 3. INTERFACE PENGGUNA INTERAKTIF (FRONTEND)
@@ -113,23 +83,39 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
-            # Membuat struktur DataFrame awal input user
-            input_df = pd.DataFrame([{
-                'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
-                'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Water': water, 'Age': age
-            }])
+            # Kalkulasi matematika manual untuk Advanced Feature Engineering
+            safe_binder = total_binder if total_binder > 0 else 1e-6
+            wbr = water / safe_binder
+            abr = agg / safe_binder
+            log_age = np.log1p(age)
+            sqrt_age = np.sqrt(age)
+            sp_x_wbr = sp * wbr
+            sp_div_wbr = sp / wbr if wbr > 0 else 0
+            ggbs_x_wbr = ggbs * wbr
+            fa_x_wbr = fa * wbr
+            wbr_sq = wbr ** 2
+            sp_sq = sp ** 2
             
-            # Menjalankan pengekstraksi fitur matematika
-            processed_input = feature_extractor(input_df)
+            # SUSUN ARRAY 18 FITUR PERSIS SESUAI URUTAN FITUR TRAINING NOTEBOOK JUPYTER
+            # Urutan: 8 Fitur Dasar -> 10 Fitur Hasil Rekayasa Matematika
+            raw_features = np.array([[
+                ggbs, cfa, rufa, sf, fa, agg, fiber, sp,
+                wbr, abr, log_age, sqrt_age, sp_x_wbr, sp_div_wbr,
+                ggbs_x_wbr, fa_x_wbr, wbr_sq, sp_sq
+            ]])
             
-            # Memaksa urutan kolom processed_input mengikuti susunan variabel internal scaler bawaan pkl Anda
-            processed_input = processed_input[feature_columns]
+            # Mematikan validasi string nama kolom scikit-learn secara paksa
+            if hasattr(main_scaler, 'feature_names_in_'):
+                del main_scaler.feature_names_in_
+                
+            # Eksekusi penskalaan berbasis data array murni
+            scaled_input = main_scaler.transform(raw_features)
             
-            # Eksekusi penskalaan nilai input tanpa error nama kolom
-            scaled_input = main_scaler.transform(processed_input)
+            # Eksekusi prediksi model final
+            raw_pred = xgb_engine.predict(scaled_input)[0]
+            pred_val = max(0.0, raw_pred)  # Batas fisik minimum beton = 0 MPa
             
-            pred_val = xgb_engine.predict(scaled_input)[0]
-            
+            # Kalibrasi Ketidakpastian 95% PI
             mae_calibration = 1.64
             uncertainty_margin = mae_calibration * 1.96
             lower_bound = max(0.0, pred_val - uncertainty_margin)
