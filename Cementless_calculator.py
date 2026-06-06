@@ -40,7 +40,7 @@ st.markdown('<div class="main-title">Prediction of Compressive Strength in Cemen
 def train_exact_notebook_engine():
     try:
         # 1. Membaca Data.csv (868 baris)
-        df = pd.read_csv('Data.csv')
+        df = pd.read_csv('xgb_mortar_model.pkl')
         if 'Strength (MPa)' in df.columns:
             df = df.rename(columns={'Strength (MPa)': 'Strength'})
     except FileNotFoundError:
