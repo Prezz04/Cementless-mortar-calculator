@@ -2,17 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+from xgboost import XGBRegressor
 
 # ==========================================
-# 1. KONFIGURASI HALAMAN & STYLE GUI (STREAMLIT)
+# 1. KONFIGURASI HALAMAN & STYLE GUI
 # ==========================================
-st.set_page_config(page_title="Cementless Mortar Calculator", layout="centered")
+st.set_page_config(page_title="Concrete Strength Calculator", layout="centered")
 
 st.markdown("""
     <style>
     .main-title { font-size:28px; font-weight:bold; text-align:center; color:#1E293B; margin-bottom:20px; }
-    
-    /* Frame Tunggal Menggunakan Tema Hijau Telur Asin (Soft Teal) */
     .unified-output-box { 
         background-color: #F0FDFA; 
         border-left: 6px solid #0D9488; 
@@ -31,21 +30,31 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOAD BRAIN ENGINE (Membaca File Biner Mandiri)
+# 2. LOAD BRAIN ENGINE (Universal JSON & PKL Loader)
 # ==========================================
 @st.cache_resource
 def load_prediction_engine():
     try:
-        # Membaca paket model biner secara langsung (Bukan dengan pd.read_csv)
-        artifacts = joblib.load('xgb_mortar_model.pkl')
-        return artifacts['model'], artifacts['scaler'], artifacts['columns']
-    except FileNotFoundError:
-        st.error("Error: File 'xgb_mortar_model.pkl' tidak ditemukan di repositori GitHub Anda.")
+        # Memuat Scaler terpisah
+        scaler = joblib.load('scaler_mortar.pkl')
+        
+        # Memuat Model dari format JSON murni XGBoost
+        model = XGBRegressor()
+        model.load_model('xgb_mortar_model.json')
+        
+        # Hardcode nama kolom fitur sesuai urutan persis untuk alignment aman
+        columns = [
+            'GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP', 
+            'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR', 
+            'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq'
+        ]
+        return model, scaler, columns
+    except Exception as e:
+        st.error(f"Error memuat model biner: {str(e)}")
         return None, None, None
 
 xgb_engine, main_scaler, feature_columns = load_prediction_engine()
 
-# Fungsi pembentuk fitur modular untuk input user
 def feature_extractor(data_df):
     df_res = data_df.copy()
     binder_cols = ['GGBS', 'CFA', 'RUFA', 'SF', 'FA']
@@ -69,8 +78,6 @@ def feature_extractor(data_df):
 # ==========================================
 if xgb_engine is not None:
     st.write("### Input Mix Design Parameters:")
-    
-    # Grid susunan input 3 kolom simetris
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -89,40 +96,31 @@ if xgb_engine is not None:
         water = st.number_input("Water (ratio by total binders)", min_value=0.0, max_value=1.0, value=0.35, step=0.01)
 
     st.write("---")
-    
-    # Mengunci variasi umur pada rentang data laboratorium aktual untuk menjaga logika kestabilan fisik pohon keputusan
     age = st.selectbox("Curing Age (days)", options=[3.0, 7.0, 28.0, 56.0, 91.0], index=2)
 
-    # Logika Tombol Eksekusi Prediksi
     if st.button("Predict Compressive Strength", type="primary", use_container_width=True):
         total_binder = ggbs + cfa + rufa + sf + fa
         
-        # Sensor Keamanan Fisika Mortar
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
-            # Mengubah data input user menjadi kerangka DataFrame
             input_df = pd.DataFrame([{
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
                 'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Water': water, 'Age': age
             }])
             
-            # Ekstraksi fitur, alignment kolom, dan normalisasi skala
             processed_input = feature_extractor(input_df)
             processed_input = processed_input[feature_columns]
             scaled_input = main_scaler.transform(processed_input)
             
-            # Prediksi Titik Utama Kuat Tekan
+            # Eksekusi prediksi murni dari file JSON tanpa konflik atribut sklearn
             pred_val = xgb_engine.predict(scaled_input)[0]
             
-            # Perhitungan Batas Ketidakpastian Diperluas ke 95% PI (Z-Score: 1.96)
             mae_calibration = 1.64
             uncertainty_margin = mae_calibration * 1.96
-            
             lower_bound = max(0.0, pred_val - uncertainty_margin)
             upper_bound = pred_val + uncertainty_margin
 
-            # Rendering Output dalam SATU FRAME UNTUK JURNAL
             st.markdown(f"""
                 <div class="unified-output-box">
                     <div class="unified-prediction">
