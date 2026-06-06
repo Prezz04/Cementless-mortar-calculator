@@ -31,19 +31,18 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOAD BRAIN ENGINE (Bypass Wrapper)
+# 2. LOAD BRAIN ENGINE
 # ==========================================
 @st.cache_resource
 def load_prediction_engine():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         scaler_path = os.path.join(current_dir, 'scaler_mortar.pkl')
-        model_path = os.path.join(current_dir, 'xgb_mortar_model.pkl') # Pake model .pkl baru lu
+        model_path = os.path.join(current_dir, 'xgb_mortar_model.pkl')
         
         scaler = joblib.load(scaler_path)
         raw_model_obj = joblib.load(model_path)
         
-        # Ekstrak core booster asli dari dalam file .pkl buat bypass error get_params()
         if hasattr(raw_model_obj, 'get_booster'):
             model = raw_model_obj.get_booster()
         else:
@@ -75,7 +74,7 @@ if xgb_engine is not None:
 
     with col3:
         rufa = st.number_input("Reactive Ultrafine FA (ratio)", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-        agg = st.number_input("Fine Aggregate (ratio by total binders)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
+        agg_input = st.number_input("Fine Aggregate (ratio by total binders)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
         water = st.number_input("Water (ratio by total binders)", min_value=0.0, max_value=1.0, value=0.35, step=0.01)
 
     st.write("---")
@@ -87,6 +86,17 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
+            # DETEKSI DAN SINKRONISASI SKALA OTOMATIS BERDASARKAN FORMAT DATAFRAME LAPANGAN LU
+            kolom_wajib = list(main_scaler.feature_names_in_)
+            idx_agg = kolom_wajib.index('Aggregate')
+            mean_agg = main_scaler.mean_[idx_agg]
+            
+            # Jika mean data asli bernilai besar (misal ratusan gram), konversi input desimal user otomatis
+            if mean_agg > 10.0:
+                agg = agg_input * 100.0
+            else:
+                agg = agg_input
+
             # Hitung fitur turunan matematika
             safe_binder = total_binder if total_binder > 0 else 1e-6
             wbr = water / safe_binder
@@ -100,7 +110,7 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # DataFrame dibikin berlabel teks string ketat agar sinkron otomatis
+            # Buat DataFrame berlabel string teks ketat agar sinkron otomatis
             input_df = pd.DataFrame([{
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
                 'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Age': age,
@@ -110,14 +120,13 @@ if xgb_engine is not None:
                 'WBR_sq': wbr_sq, 'SP_sq': sp_sq
             }])
             
-            # Membaca susunan nama kolom dari metadata scaler pkl baru lu
-            kolom_wajib = list(main_scaler.feature_names_in_)
+            # Filter urutan kolom agar klop dengan isi memori pkl
             input_df_final = input_df[kolom_wajib]
             
             # Jalankan Transformasi Skala
             scaled_array = main_scaler.transform(input_df_final)
             
-            # Konversi hasil skala ke DMatrix Core XGBoost (Meloloskan dari error sklearn)
+            # Konversi hasil skala ke DMatrix Core XGBoost
             dmatrix_input = xgb.DMatrix(scaled_array, feature_names=kolom_wajib)
             
             # Eksekusi Prediksi Mentah dari Inti Booster
