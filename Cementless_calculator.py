@@ -31,23 +31,20 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOAD BRAIN ENGINE (Bypass Scikit-Learn)
+# 2. LOAD PURE ENGINE (Format .json Universal)
 # ==========================================
 def load_prediction_engine():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         scaler_path = os.path.join(current_dir, 'scaler_mortar.pkl')
-        model_path = os.path.join(current_dir, 'xgb_mortar_model.pkl')
+        model_path = os.path.join(current_dir, 'xgb_mortar_model.json')
         
         scaler = joblib.load(scaler_path)
-        raw_model_obj = joblib.load(model_path)
         
-        # Ekstrak core booster asli dari dalam objek .pkl untuk menghindari AttributeError
-        if hasattr(raw_model_obj, 'get_booster'):
-            model = raw_model_obj.get_booster()
-        else:
-            model = raw_model_obj
-            
+        # Menggunakan Booster murni untuk memotong semua masalah versi objek .pkl
+        model = xgb.Booster()
+        model.load_model(model_path)
+        
         return model, scaler
     except Exception as e:
         st.error(f"Error memuat file biner: {str(e)}")
@@ -86,7 +83,7 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
-            # Hitung fitur turunan matematika
+            # Hitung parameter rekayasa fitur
             safe_binder = total_binder if total_binder > 0 else 1e-6
             wbr = water / safe_binder
             abr = agg / safe_binder
@@ -99,7 +96,7 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # Bentuk DataFrame berlabel string teks
+            # Susun DataFrame berlabel string teks ketat sesuai metadata scaler pkl Anda
             input_df = pd.DataFrame([{
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
                 'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Age': age,
@@ -109,6 +106,38 @@ if xgb_engine is not None:
                 'WBR_sq': wbr_sq, 'SP_sq': sp_sq
             }])
             
-            # Samakan urutan kolom dengan isi memori pkl secara otomatis
+            # Ambil urutan kolom wajib langsung dari memori penamaan objek scaler Anda
             kolom_wajib = list(main_scaler.feature_names_in_)
-            input_df_final = input
+            input_df_final = input_df[kolom_wajib]
+            
+            # Jalankan Transformasi Skala
+            scaled_array = main_scaler.transform(input_df_final)
+            
+            # Konversi hasil skala ke DMatrix Core XGBoost dengan menyertakan nama fiturnya
+            dmatrix_input = xgb.DMatrix(scaled_array, feature_names=kolom_wajib)
+            
+            # Eksekusi Prediksi Final langsung dari core booster
+            raw_pred = xgb_engine.predict(dmatrix_input)[0]
+            pred_val = max(0.0, float(raw_pred))
+            
+            # Kalibrasi Ketidakpastian 95% PI
+            mae_calibration = 1.64
+            uncertainty_margin = mae_calibration * 1.96
+            lower_bound = max(0.0, pred_val - uncertainty_margin)
+            upper_bound = pred_val + uncertainty_margin
+
+            st.markdown(f"""
+                <div class="unified-output-box">
+                    <div class="unified-prediction">
+                        Predicted Compressive Strength: {pred_val:.2f} MPa
+                    </div>
+                    <div class="unified-divider"></div>
+                    <div class="unified-title">
+                        Reliability Analysis (95% Predictive Interval)
+                    </div>
+                    <div class="unified-text">
+                        Based on XGBoost historical residual calibration (MAE: 1.64 MPa), the statistical boundaries for this specific alternative mix configuration fall within:<br>
+                        <strong>[{lower_bound:.2f} MPa — {upper_bound:.2f} MPa]</strong>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
