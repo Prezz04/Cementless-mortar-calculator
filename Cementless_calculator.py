@@ -81,11 +81,10 @@ if xgb_engine is not None:
         if water <= 0.0001 or total_binder <= 0.0001:
             st.error("🚨 INVALID MIX DESIGN! Kuantitas Air atau komponen Binder tidak boleh nol.")
         else:
-            # KONVERSI OTOMATIS: Mengalikan rasio desimal input (2.0) menjadi skala ratusan massa (200.0) 
-            # agar klop dengan memori training 'scaler_mortar.pkl' Anda yang bernilai mean 234.56
-            agg = agg_input * 100.0
+            # SINKRONISASI SKALA AGREGAT
+            agg = agg_input * 100.0 if main_scaler.mean_[5] > 10.0 else agg_input
             
-            # Perhitungan fitur turunan matematika
+            # Kalkulasi parameter penunjang matematika
             safe_binder = total_binder if total_binder > 0 else 1e-6
             wbr = water / safe_binder
             abr = agg / safe_binder
@@ -98,30 +97,33 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # URUTAN DIKUNCI MATRIKS 18 KOLOM SECARA KETAT
-            kolom_kunci = [
-                'GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP',
-                'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR',
-                'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq'
-            ]
-            
-            input_data = pd.DataFrame([{
+            # Wadah DataFrame Sementara
+            raw_dict = {
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
-                'Aggregate': agg, 'Fiber': fiber, 'SP': sp,
+                'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Age': age,
                 'WBR': wbr, 'ABR': abr, 'Log_Age': log_age, 'Sqrt_Age': sqrt_age,
                 'SP_x_WBR': sp_x_wbr, 'SP_div_WBR': sp_div_wbr, 
                 'GGBS_x_WBR': ggbs_x_wbr, 'FA_x_WBR': fa_x_wbr, 
                 'WBR_sq': wbr_sq, 'SP_sq': sp_sq
-            }])
+            }
             
-            # Reindex urutan kolom sesuai standar kunci
-            input_df_final = input_data[kolom_kunci]
+            # MEMBACA METADATA URUTAN KOLOM ASLI DARI SCALER ANDA
+            if hasattr(main_scaler, 'feature_names_in_'):
+                urutan_asli = list(main_scaler.feature_names_in_)
+            else:
+                # Jika tidak ada teks nama kolom, gunakan fallback panjang fitur model Anda (18 kolom)
+                urutan_asli = [
+                    'GGBS', 'CFA', 'RUFA', 'SF', 'FA', 'Aggregate', 'Fiber', 'SP',
+                    'WBR', 'ABR', 'Log_Age', 'Sqrt_Age', 'SP_x_WBR', 'SP_div_WBR',
+                    'GGBS_x_WBR', 'FA_x_WBR', 'WBR_sq', 'SP_sq'
+                ]
             
-            # Transformasi Skala & Prediksi Akhir
+            # Paksa buat DataFrame dengan urutan kolom yang 100% sama dengan scaler pkl Anda
+            input_df_final = pd.DataFrame([raw_dict])[urutan_asli]
+            
+            # Eksekusi Transformasi Skala & Prediksi Akhir
             scaled_input = main_scaler.transform(input_df_final)
             pred_val = xgb_engine.predict(scaled_input)[0]
-            
-            # Batasi batas bawah fisik minimal 0 MPa jika ada pencilan
             pred_val = max(0.0, pred_val)
             
             # Interval Prediksi 95%
@@ -145,3 +147,8 @@ if xgb_engine is not None:
                     </div>
                 </div>
             """, unsafe_allow_html=True)
+            
+            # MENAMPILKAN URUTAN STRUKTUR FITUR UNTUK INSPEKSI VISUAL KITA
+            st.write("---")
+            st.info("💡 **Debugging Log:** Urutan kolom yang dibaca oleh sistem saat ini:")
+            st.dataframe(pd.DataFrame([urutan_asli], index=["Urutan Indeks Kolom"]))
