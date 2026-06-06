@@ -31,20 +31,25 @@ st.markdown("""
 st.markdown('<div class="main-title">Prediction of Compressive Strength in Cementless Mortar</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. LOAD PURE ENGINE (Format .json Universal)
+# 2. LOAD ENGINE (Bypass Menggunakan Properti Booster)
 # ==========================================
 def load_prediction_engine():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         scaler_path = os.path.join(current_dir, 'scaler_mortar.pkl')
-        model_path = os.path.join(current_dir, 'xgb_mortar_model.json')
+        model_path = os.path.join(current_dir, 'xgb_mortar_model.pkl')
         
         scaler = joblib.load(scaler_path)
+        raw_model_obj = joblib.load(model_path)
         
-        # Menggunakan Booster murni untuk memotong semua masalah versi objek .pkl
-        model = xgb.Booster()
-        model.load_model(model_path)
-        
+        # Mengambil core booster langsung dari properti dasar objek
+        if hasattr(raw_model_obj, '_Booster'):
+            model = raw_model_obj._Booster
+        elif hasattr(raw_model_obj, 'get_booster'):
+            model = raw_model_obj.get_booster()
+        else:
+            model = raw_model_obj
+            
         return model, scaler
     except Exception as e:
         st.error(f"Error memuat file biner: {str(e)}")
@@ -96,7 +101,7 @@ if xgb_engine is not None:
             wbr_sq = wbr ** 2
             sp_sq = sp ** 2
             
-            # Susun DataFrame berlabel string teks ketat sesuai metadata scaler pkl Anda
+            # Bentuk DataFrame sesuai nama kolom asli
             input_df = pd.DataFrame([{
                 'GGBS': ggbs, 'CFA': cfa, 'RUFA': rufa, 'SF': sf, 'FA': fa,
                 'Aggregate': agg, 'Fiber': fiber, 'SP': sp, 'Age': age,
@@ -106,14 +111,14 @@ if xgb_engine is not None:
                 'WBR_sq': wbr_sq, 'SP_sq': sp_sq
             }])
             
-            # Ambil urutan kolom wajib langsung dari memori penamaan objek scaler Anda
+            # Samakan urutan kolom wajib berdasarkan metadata objek scaler
             kolom_wajib = list(main_scaler.feature_names_in_)
             input_df_final = input_df[kolom_wajib]
             
-            # Jalankan Transformasi Skala
+            # Transformasi Skala
             scaled_array = main_scaler.transform(input_df_final)
             
-            # Konversi hasil skala ke DMatrix Core XGBoost dengan menyertakan nama fiturnya
+            # Konversi hasil skala ke DMatrix Core XGBoost
             dmatrix_input = xgb.DMatrix(scaled_array, feature_names=kolom_wajib)
             
             # Eksekusi Prediksi Final langsung dari core booster
