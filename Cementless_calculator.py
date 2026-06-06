@@ -6,7 +6,7 @@ import joblib
 # ==========================================
 # 1. KONFIGURASI HALAMAN & STYLE GUI (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="Concrete Strength Calculator", layout="centered")
+st.set_page_config(page_title="Cementless Mortar Calculator", layout="centered")
 
 st.markdown("""
     <style>
